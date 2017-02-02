@@ -1,0 +1,24 @@
+language: python
+sudo: required
+python:
+  - "2.7"
+# command to install dependencies
+install:
+  - pip install -r requirements.txt
+  - pip install ansible
+  - pip install pytest
+  - pip install pytest-ordering
+
+# Run in parallel for each PostgreSQL version being tested
+env:
+  global:
+    - CI_NODE_TOTAL=2
+  matrix:
+  - POSTGRES_VERSION=9.5 CI_NODE_INDEX=0
+  - POSTGRES_VERSION=9.6 CI_NODE_INDEX=1
+
+# command to build and run tests
+script:
+  - ssh-keygen -y -f /home/travis/.ssh/id_rsa > /home/travis/.ssh/id_rsa.pub
+  - cat /home/travis/.ssh/id_rsa.pub >> /home/travis/.ssh/authorized_keys
+  - pytest -v tests
