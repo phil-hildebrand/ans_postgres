@@ -1,0 +1,552 @@
+---
+
+- hosts: primary
+  name: Gather facts from primary
+  tasks: [ ]
+
+- hosts: secondary
+  name: Gather facts from secondary
+  tasks: [ ]
+
+
+- hosts: dev
+
+  vars_files:
+   - vars/default_vars.yml
+
+  tasks:
+
+   - name: Set vault variable if travis run
+     set_fact:
+      vaulted: "travis"
+      vault_role_dba: "travis"
+      vault_role_dev: "travis"
+      vault_role_app: "travis"
+      vault_role_monitor: "travis"
+      vault_role_slave: "travis"
+      vault_prod_role_dba: "travis"
+      vault_prod_role_dev: "travis"
+      vault_prod_role_app: "travis"
+      vault_prod_role_monitor: "travis"
+      vault_prod_role_slave: "travis"
+     when: (env == 'travis')
+     tags:
+        - backups
+        - auth
+        - multi
+        - repl
+
+   - name: Set depreciated replication options if 9.5
+     set_fact:
+      wal_level: "hot_standby"
+     when: version == '9.5' and wal_level == 'replica'
+     tags:
+        - backups
+        - auth
+        - multi
+        - repl
+      
+   - name: Remove existing PostgreSQL instance if travis run
+     apt:
+      name=postgresql state=absent
+     when: (env == 'travis' ) 
+
+   - name: Include vaulted variables when not in travis
+     include_vars: vars/vault_vars.yml
+     no_log: True
+     when: (env != 'travis')
+     tags:
+        - backups
+        - auth
+        - multi
+        - repl
+
+   - name: Add Main PostgreSQL repository
+     become_method: sudo
+     apt_repository:
+      repo='deb http://apt.postgresql.org/pub/repos/apt {{ansible_distribution_release}}-pgdg main' state=present
+     tags:
+        - backups
+        - auth
+        - multi
+        - repl
+
+   - name: Update PostgreSQL Key
+     become_method: sudo
+     apt_key:
+      url=https://www.postgresql.org/media/keys/ACCC4CF8.asc state=present
+     tags:
+        - backups
+        - auth
+        - multi
+        - repl
+
+   - name: Update apt cache
+     become_method: sudo
+     apt: update_cache=yes
+     tags:
+        - backups
+        - auth
+        - multi
+        - repl
+
+   - name: Setup replication requirements
+     become_method: sudo
+     apt:
+      name=screen state=latest
+      name=netcat state=latest
+      name=pv state=latest
+     tags:
+        - repl
+
+   - name: Update sysctl settings
+     become_method: sudo
+     sysctl:
+      name={{ item.name }} value={{ item.value }} state={{ item.state }}
+     with_items:
+      - { name: 'vm.swappiness', value: 0, state: 'present' }
+      - { name: 'fs.nr_open', value: 500000, state: 'present' }
+      - { name: 'fs.file-max', value: 500000, state: 'present' }
+      - { name: 'kernel.sem', value: '5010 500000 32 128', state: 'present' }
+
+   - name: Get list of drives if using ssds for data
+     become_method: sudo
+     shell: lsblk -ltf -o NAME,MOUNTPOINT|grep -B1 '/data'| perl -e 'while (<>){ if (! /data/ ) {chomp} ;print}'|sed 's/^\([A-Za-z]*\).*\(dm-[0-9*]\).*/\1\n\2/' | cut -d' ' -f1
+     register: ssd_drives
+     ignore_errors: True
+     when: ssd
+
+   - name: Update schedulers and rotational info if using ssds for any drives found
+     become_method: sudo
+     shell:
+      echo 0 >  /sys/block/{{item}}/queue/rotational
+      echo noop > /sys/block/{{item}}/queue/scheduler
+     with_items: "{{ ssd_drives.stdout_lines|default([]) }}"
+
+   - name: Remove apparmor
+     become_method: sudo
+     apt: name=apparmor state=absent
+
+   - name: Forcibly kill running PostgreSQL installs if force
+     become_method: sudo
+     ignore_errors: True
+     command: killall postgres
+     when: (force|bool)
+
+   - name: Check for data directory
+     stat: path={{data_dir}}
+     register: dd
+
+   - name: Verify backup directory exists
+     become_method: sudo
+     file: path={{ backup_dir }} mode=0777 state=directory
+     tags:
+        - backups
+        - repl
+
+   - name: Set hostname length as San Mount identifier
+     set_fact:
+        san_mount_id: "{{ ansible_host | length % 2 }}"
+     tags:
+        - backups
+
+   - debug: var=san_mount_id verbosity=2
+     tags:
+        - backups
+
+   - name: Set San Mount A
+     set_fact:
+        san_mount: dalsan02a:/vol/vol_dbbackups02a
+     when: ({{ san_mount_id }} == 1)
+     tags:
+        - backups
+
+   - name: Set San Mount B
+     set_fact:
+        san_mount: dalsan02b:/vol/vol_dbbackups02b
+     when: ({{ san_mount_id }} != 1)
+     tags:
+        - backups
+
+   - name: Add san mount to mount tab
+     become_method: sudo
+     mount:
+       name: "{{ backup_dir }}"
+       src: "{{ san_mount }}"
+       fstype: nfs
+       opts: noatime
+       state: present
+     when: (force|bool)
+     tags:
+        - backups
+
+   - name: Mount San backup if not travis or vagrant, and ignore errors
+     become_method: sudo
+     mount:
+       name: "{{ backup_dir }}"
+       src: "{{ san_mount }}"
+       fstype: nfs
+       opts: noatime
+       state: mounted
+     ignore_errors: True
+     async: 30
+     poll: 10
+     when: (env != 'travis') and (force|bool)
+     tags:
+        - backups
+
+   - name: Verify backup/hostname directory exists
+     become_method: sudo
+     file: path={{ backup_dir }}/{{ ansible_hostname }} mode=0777 state=directory
+     tags:
+        - backups
+
+   - name: Backup existing PostgreSQL data if force=true
+     become_method: sudo
+     shell: DT=`date +%Y%m%d`; tar -cf - {{data_dir}} | sudo gzip -c > {{ backup_dir }}/{{ ansible_hostname }}/install_data_dir_backup_${DT}.tar.gz
+     ignore_errors: True
+     when: (force|bool) and dd.stat.isdir is defined and dd.stat.isdir
+     tags:
+        - backups
+        - multi
+
+   - name: Remove existing data_dir files if force 
+     become_method: sudo
+     file: path={{ data_dir }} state=absent
+     when: (force|bool) and dd.stat.isdir is defined and dd.stat.isdir
+
+   - name: Check if PostgreSQL packages are installed
+     become_method: sudo
+     shell: dpkg -l 'postgresql-*' | grep -v '^.n\|^+\|^|\|Des' | tr -s ' ' | cut -d ' ' -f2
+     ignore_errors: True
+     register: postgresql_installed
+     tags:
+        - backups
+        - multi
+        - repl
+        - auth
+
+   - debug: verbosity=2
+     with_items:
+      - { name: 'env', value: '{{ env }}' }
+      - { name: 'force', value: '{{ force }}' }
+      - { name: 'version', value: '{{ version }}' }
+      - { name: 'postgresql_installed.stdout_lines', value: '{{ postgresql_installed.stdout_lines }}' }
+     tags:
+        - auth
+        - backups
+        - multi
+        - repl
+
+   - name: Fix partially configured packages
+     become_method: sudo
+     shell: dpkg --configure -a
+     ignore_errors: True
+     when: (force|bool)
+     tags:
+        - backups
+        - multi
+        - repl
+
+   - name: Remove any previosly installed PostgreSQL config files if force=true
+     become_method: sudo
+     file: path="{{ item.path }}" state="{{ item.state }}"
+     with_items:
+      - { path: '/etc/postgresql', state: 'absent' }
+      - { path: '/etc/postgresql-common', state: 'absent' }
+      - { path: '/var/lib/postgresql', state: 'absent' }
+      - { path: '/etc/init.d/postgresql', state: 'absent' }
+     when: ((force|bool) or (postgresql_installed is not defined))
+
+   - name: Remove existing PostgreSQL installs if force=true
+     become_method: sudo
+     apt: name={{item}} state=absent purge=yes force=yes autoremove=yes dpkg_options=force-configure-any
+     with_items: "{{ postgresql_installed.stdout_lines|default([]) }}"
+     async: 240
+     poll: 5
+     when: (force|bool)
+
+   - name: Install PostgreSQL
+     become_method: sudo
+     apt:
+      name=postgresql-{{version}} state=latest force=yes
+     when: postgresql_installed.stdout_lines == [] or (force|bool)
+
+   - name: Register PostgreSQL binary path
+     set_fact:
+       pg_bin: "/usr/lib/postgresql/{{ version }}/bin"
+     tags:
+        - auth
+        - backups
+        - multi
+        - repl
+
+   - name: Add PostgreSQL binary path to PATH
+     become_method: sudo
+     lineinfile:
+       dest=/etc/environment
+       state=present
+       backrefs=yes
+       regexp='PATH=(["]*)((?!.*?{{pg_bin}}).*?)(["]*)$'
+       line="PATH=\1\2:{{pg_bin}}\3"
+     when: postgresql_installed
+     tags:
+        - auth
+        - backups
+        - multi
+        - repl
+
+   - name: Get default data dir
+     become_method: sudo
+     shell: sudo -u postgres psql -t -q -c 'SHOW data_directory;'| tr -d '[:space:]'
+     register: result
+     tags:
+        - auth
+        - backups
+        - multi
+        - repl
+
+   - name: Set default data dir
+     set_fact:
+      default_data_dir: "{{ result.stdout }}"
+     tags:
+        - auth
+        - backups
+        - multi
+        - repl
+
+   - name: Get default config file
+     become_method: sudo
+     shell: sudo -u postgres psql -t -q -c 'SHOW config_file;'| tr -d '[:space:]'
+     register: result
+     tags:
+        - auth
+        - backups
+        - multi
+        - repl
+
+   - name: Set default config file
+     set_fact:
+      default_config: "{{ result.stdout }}"
+     tags:
+        - auth
+        - backups
+        - multi
+        - repl
+
+   - name: Get default config dir
+     shell: dirname {{ default_config }}
+     register: result
+     tags:
+        - auth
+        - backups
+        - multi
+        - repl
+
+   - name: Set default config dir
+     set_fact:
+      default_config_dir: "{{ result.stdout }}"
+     tags:
+        - auth
+        - backups
+        - multi
+        - repl
+
+   - name: Get config name
+     shell: basename {{ default_config }}
+     register: result
+     tags:
+        - auth
+        - backups
+        - multi
+        - repl
+
+   - name: Set default config name
+     set_fact:
+      default_config_name: "{{ result.stdout }}"
+     tags:
+        - auth
+        - backups
+        - multi
+        - repl
+
+   - debug: verbosity=2
+     with_items:
+      - { name: 'default_config', value: '{{ default_config }}' }
+      - { name: 'default_config_dir', value: '{{ default_config_dir }}' }
+      - { name: 'default_config_name', value: '{{ default_config_name }}' }
+      - { name: 'default_data_dir', value: '{{ default_data_dir }}' }
+      - { name: 'data_dir', value: '{{ data_dir }}' }
+     tags:
+        - auth
+        - backups
+        - multi
+        - repl
+
+   - name: Stop PostgreSQL for reconfiguration
+     become_method: sudo
+     service: name=postgresql pattern=postgres state=stopped
+     when: (force|bool) or (postgresql_installed is not defined)
+
+   - name: Set max mem use to 80% of mem if total mem is greater than 2GB
+     set_fact:
+      shared_buffers: "{{ ((ansible_memtotal_mb  * 0.8) * 0.25) | int }}"
+      effective_cache_size: "{{ ((ansible_memtotal_mb  * 0.8) * 0.75) | int }}"
+     when: "{{ ansible_memtotal_mb > 2048 }}"
+
+   - name: Set buffer size to 100M if total mem is less than 2GB
+     set_fact:
+      shared_buffers: "128"
+      effective_cache_size: "512"
+     when: "{{ ansible_memtotal_mb <= 2048 }}"
+
+   - debug:
+      var=shared_buffers verbosity=2
+
+   - debug:
+      var=effective_cache_size verbosity=2
+
+   - name: Upload PostgreSQL configuration file
+     become_method: sudo
+     template: src=templates/postgresql-{{version}}.conf.j2 dest=/etc/postgresql/custom-postgresql.conf owner=postgres group=postgres mode=644 backup=yes
+     when: (force|bool) or (postgresql_installed is not defined)
+
+   - name: Upload PostgreSQL auth file
+     become_method: sudo
+     template: src=templates/pg_hba-{{version}}.conf.j2 dest=/etc/postgresql/{{version}}/main/pg_hba.conf owner=postgres group=postgres mode=644 backup=yes
+     when: (force|bool) or (postgresql_installed is not defined)
+     tags:
+        - auth
+
+   - name: Include Custom PostgreSQL replication configuration settings
+     become_method: sudo
+     lineinfile:
+      dest: /etc/postgresql/custom-postgresql.conf
+      line: "{{ item.line }}"
+      insertafter: EOF
+     with_items:
+         - { line: '' }
+         - { line: '# Replication Settings' }
+         - { line: '' }
+         - { line: 'max_replication_slots = 2' }
+         - { line: 'archive_mode = always' }
+         - { line: "archive_command = 'cp %p /{{ archive_dir }}/%f'" }
+     tags:
+        - repl
+
+   - name: Include travis connection info when env=travis
+     become_method: sudo
+     lineinfile:
+      dest: "/etc/postgresql/{{version}}/main/pg_hba.conf"
+      insertafter: EOF
+      line: "{{ item.line }}"
+     with_items:
+      - { line: 'host    all             travis        192.0.0.0/8             md5' }
+      - { line: 'host    all             travis        10.0.0.0/8              md5' }
+      - { line: 'host    all             travis        localhost               md5' }
+      - { line: 'host    all             travis        127.0.0.1/32            md5' }
+      - { line: 'host    all             travis        ::1/128                 md5' }
+     when: (env == 'travis') and ((force|bool) or (postgresql_installed is not defined))
+
+   - name: Pull Custom PostgreSQL configuration into main config
+     become_method: sudo
+     lineinfile:
+      dest: "{{ default_config }}"
+      insertafter: EOF
+      line: "include = '/etc/postgresql/custom-postgresql.conf'		# include Custom Config Info"
+     when: (force|bool) or (postgresql_installed is not defined)
+
+   - name: Modify data directory in PostgreSQL configuration
+     lineinfile:
+      dest: "{{ default_config }}"
+      regexp: '^data_directory ='
+      line: "data_directory = '{{ data_dir }}/main'         # use data in another directory"
+     when: (force|bool) or (postgresql_installed is not defined)
+
+   - name: Rsync default PostgreSQL directory to data_dir 
+     become_method: sudo
+     synchronize:
+      src: "{{ default_data_dir }}"
+      dest: "{{ data_dir }}"
+     delegate_to: "{{ inventory_hostname }}"
+     no_log: True
+     when: ("{{ default_data_dir }}" != "{{ data_dir }}") and ((force|bool) or (postgresql_installed is not defined))
+
+   - name: Set permissions for PostgreSQL directory
+     become_method: sudo
+     file: path={{data_dir}} mode=0755 state=directory
+
+   - name: Set permissions for PostgreSQL main directory
+     become_method: sudo
+     file: path={{data_dir}}/main mode=0700 state=directory
+
+   - name: Verify archive directory exists
+     become_method: sudo
+     file: path={{ archive_dir }} mode=0755 state=directory owner=postgres group=postgres
+     tags:
+        - repl
+
+   - name: Start PostgreSQL
+     become_method: sudo
+     service: name=postgresql pattern=postgres state=started
+     when: (force|bool) or (postgresql_installed is not defined)
+
+   - name: Check syslog for PostgreSQL errors
+     become_method: sudo
+     shell: tail /var/log/syslog | grep -i error | wc -l
+     register: errors_found
+     when: (force|bool) or (postgresql_installed is not defined)
+
+   - debug: var=errors_found verbosity=2
+
+   - name: Verify PostgreSQL actually completed startup
+     shell: grep postgres /var/log/syslog | tail -20 | grep 'ready to accept connections' | wc -l
+     register: check_startup
+     until: (check_startup.stdout|int) > 0
+     retries: 5
+     delay: 10
+     when: (force|bool) or (postgresql_installed is not defined)
+
+   - debug: var=check_startup verbosity=2
+
+   - name: Upload Backup Cron
+     become_method: sudo
+     template: src=templates/backup.cron.j2 dest=/etc/cron.d/pg_backups owner=root group=root mode=644 backup=no
+     when: (force|bool) or (postgresql_installed is not defined)
+     tags:
+        - backups
+
+   - name: Run Initial Backup
+     become_method: sudo
+     shell: sudo -u postgres pg_dumpall | gzip -c > {{ backup_dir }}/{{ ansible_hostname }}/full_backup_`date +%d%m%Y%H%M`.dmp.gz
+     when: (force|bool) or (postgresql_installed is not defined)
+     tags:
+        - backups
+
+   - debug:
+       var: vault_prod_role_app
+       verbosity: 2
+     tags:
+        - auth
+
+   - name: Set instance port for auth
+     set_fact:
+      instance_port: "{{ port }}"
+     tags:
+        - backups
+        - auth
+
+   - include: tasks/auth.yml
+     when: (force|bool) or (postgresql_installed is not defined)
+     tags:
+        - auth
+
+   - include: tasks/multi.yml
+     when: (multi|bool) and (postgresql_installed is defined)
+     tags:
+        - multi
+
+   - include: tasks/replication.yml
+     when: (repl|bool) and (postgresql_installed is defined)
+     tags:
+        - repl

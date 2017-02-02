@@ -1,0 +1,15 @@
+##################################################################
+# *  *  *  *  * command to be executed
+# -  -  -  -  -
+# |  |  |  |  |
+# |  |  |  |  +---- day of week (0 - 6) (Sunday=0)
+# |  |  |  +---- month (1 - 12)
+# |  |  +---- day of        month (1 - 31)
+# |  +---- hour (0 - 23)
+# +---- min (0 - 59)
+#
+# Daily PostgreSQL Backups
+#
+MAILTO="{{backup_notification}}"
+#
+{{ backup_min }} {{ backup_hour }} * * * postgres pg_dumpall -v | gzip -c > {{ backup_dir }}/`hostname`/`hostname`_full_backup_`date +%d%m%Y%H%M`.dmp.gz

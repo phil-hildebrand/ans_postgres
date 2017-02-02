@@ -1,0 +1,162 @@
+---
+
+   - name: Set host variables (ports/instance name)
+     set_fact:
+       p_port: "{{ hostvars[groups['primary'][0]]['p_port'] }}"
+       s_port: "{{ hostvars[groups['secondary'][0]]['s_port'] }}"
+       secondary_instance_name: "{{ hostvars[groups['secondary'][0]]['instance_name'] }}"
+     tags:
+        - multi
+
+   - name: Remove existing multi_data_dir files if force 
+     become_method: sudo
+     file: path={{ multi_data_dir }} state=absent
+     when: (force|bool) and (multi|bool) and dd.stat.isdir is defined and dd.stat.isdir
+     tags:
+        - multi
+
+   - name: Verify 2nd data dir exists
+     become_method: sudo
+     file: path={{ multi_data_dir }} mode=0700 state=directory owner=postgres group=postgres
+     tags:
+        - multi
+
+   - name: Backup existing PostgreSQL data
+     become_method: sudo
+     shell: DT=`date +%Y%m%d`; tar -cf - {{data_dir}} | sudo gzip -c > {{ backup_dir }}/{{ ansible_hostname }}/multi_backup_${DT}.tar.gz
+     ignore_errors: True
+     when: (multi|bool) and dd.stat.isdir is defined and dd.stat.isdir
+     tags:
+        - multi
+
+   - name: Check if PostgreSQL packages are installed
+     become_method: sudo
+     shell: dpkg -l 'postgresql-*' | grep -v '^.n\|^+\|^|\|Des' | tr -s ' ' | cut -d ' ' -f2
+     ignore_errors: True
+     register: postgresql_installed
+     tags:
+        - multi
+
+   - debug:
+      var=postgresql_installed verbosity=2
+     tags:
+        - multi
+
+   - debug:
+      var=postgresql_installed.stdout_lines verbosity=2
+     tags:
+        - multi
+
+   - name: Fix partially configured packages
+     become_method: sudo
+     shell: dpkg --configure -a
+     ignore_errors: True
+     when: (force|bool) and (multi|bool)
+     tags:
+        - multi
+
+   - name: Set instance port for auth
+     set_fact:
+      instance_port: "{{ multi_port }}"
+      port: "{{ multi_port }}"
+     tags:
+        - multi
+
+   - name: Create 2nd database instance
+     become_method: sudo
+     shell: sudo -u postgres pg_createcluster {{ version }} {{ instance_name }} -d {{ multi_data_dir }} -p {{ multi_port }}
+     when: (postgresql_installed) and (force|bool) and (multi|bool)
+     tags:
+        - multi
+
+   - name: Upload PostgreSQL configuration file
+     become_method: sudo
+     template: src=templates/postgresql-{{version}}.conf.j2 dest=/etc/postgresql/{{ instance_name }}-postgresql.conf owner=postgres group=postgres mode=644 backup=yes
+     when: (postgresql_installed) and (multi|bool)
+     tags:
+        - multi
+
+   - name: Upload PostgreSQL auth file
+     become_method: sudo
+     template: src=templates/pg_hba-{{version}}.conf.j2 dest=/etc/postgresql/{{version}}/{{ instance_name }}/pg_hba.conf owner=postgres group=postgres mode=644 backup=yes
+     when: (postgresql_installed) and (multi|bool)
+     tags:
+        - auth
+        - multi
+
+   - name: Include travis connection info when env=travis
+     become_method: sudo
+     lineinfile:
+      dest: "/etc/postgresql/{{version}}/{{ instance_name }}/pg_hba.conf"
+      insertafter: EOF
+      line: "{{ item.line }}"
+     with_items:
+      - { line: 'host    all             travis        192.0.0.0/8             md5' }
+      - { line: 'host    all             travis        10.0.0.0/8              md5' }
+      - { line: 'host    all             travis        localhost               md5' }
+      - { line: 'host    all             travis        127.0.0.1/32            md5' }
+      - { line: 'host    all             travis        ::1/128                 md5' }
+     when: (env == 'travis') and (postgresql_installed) and (multi|bool)
+     tags:
+        - multi
+
+   - name: Get secondary config dir
+     shell: dirname {{ default_config_dir }}
+     register: result
+     tags:
+        - multi
+
+   - name: set secondary config dir
+     set_fact:
+       secondary_config_dir: "{{ result.stdout }}"
+     tags:
+        - multi
+
+   - name: Modify port in 2nd PostgreSQL configuration file
+     lineinfile:
+      dest: "{{ secondary_config_dir }}/{{ instance_name }}/{{ default_config_name }}"
+      regexp: '^port ='
+      line: "port = '{{ multi_port }}'"
+     when: (postgresql_installed) and (multi|bool)
+     tags:
+        - multi
+
+   - name: Modify data directory in 2nd PostgreSQL configuration file
+     lineinfile:
+      dest: "{{ secondary_config_dir }}/{{ instance_name }}/{{ default_config_name }}"
+      regexp: '^data_directory ='
+      line: "data_directory = '{{ data_dir }}/{{ instance_name }}'         # use data in another directory"
+     when: (postgresql_installed) and (multi|bool)
+     tags:
+        - multi
+
+   - name: Include Custom PostgreSQL secondary configuration settings
+     become_method: sudo
+     lineinfile:
+      dest: "{{ secondary_config_dir }}/{{ instance_name }}/{{ default_config_name }}"
+      regexp: '^include ='
+      line: "include = '/etc/postgresql/{{ instance_name }}-{{ default_config_name }}'            # include Config Info"
+     when: (postgresql_installed) and (multi|bool)
+     tags:
+        - multi
+
+   - name: Start 2nd database instance
+     become_method: sudo
+     shell: sudo -u postgres pg_ctlcluster {{ version }} {{ instance_name }} start
+     async: 30
+     poll: 10
+     when: (postgresql_installed) and (multi|bool)
+     tags:
+        - multi
+
+   - name: Verify replicated instance port is available
+     wait_for: port={{ s_port }} delay=2 timeout=10
+     when: (postgresql_installed) and (multi|bool)
+     tags:
+        - multi
+
+   - include: auth.yml
+     when: (multi|bool) and postgresql_installed
+     tags:
+        - multi
+        - repl

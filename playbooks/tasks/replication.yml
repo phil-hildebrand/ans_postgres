@@ -1,0 +1,177 @@
+---
+   - name: Set replication backup location
+     set_fact:
+       p_port: "{{ hostvars[groups['primary'][0]]['p_port'] }}"
+       s_port: "{{ hostvars[groups['secondary'][0]]['s_port'] }}"
+       secondary_data_dir: "{{ hostvars[groups['secondary'][0]]['data_dir'] }}"
+       secondary_instance_name: "{{ hostvars[groups['secondary'][0]]['instance_name'] }}"
+       primary: "{{ hostvars[groups['primary'][0]]['ansible_default_ipv4']['address'] }}"
+     when: ( env != 'travis' )
+     tags:
+        - repl
+
+   - name: Set primary to localhost if travis
+     set_fact:
+       p_port: "{{ hostvars[groups['primary'][0]]['p_port'] }}"
+       s_port: "{{ hostvars[groups['secondary'][0]]['s_port'] }}"
+       secondary_data_dir: "{{ hostvars[groups['secondary'][0]]['data_dir'] }}"
+       secondary_instance_name: "{{ hostvars[groups['secondary'][0]]['instance_name'] }}"
+       primary: "localhost"
+     when: ( env == 'travis' )
+     tags:
+        - repl
+
+   - debug: var=p_port verbosity=2
+   - debug: var=s_port verbosity=2
+
+   - name: Verify backup directory exists
+     become_method: sudo
+     file: path={{ backup_dir }} mode=0777 state=directory
+     tags:
+        - repl
+
+   - name: Verify backup/hostname directory exists
+     become_method: sudo
+     file: path={{ backup_dir }}/{{ ansible_hostname }} mode=0777 state=directory
+     tags:
+        - repl
+
+   - name: Set replication backup location
+     set_fact:
+       repl_backup: "{{ backup_dir }}/{{ ansible_hostname }}"
+     when: inventory_hostname in groups['primary']
+     tags:
+        - repl
+
+   - debug: var=repl_backup verbosity=2
+
+   - name: Fix partially configured packages
+     become_method: sudo
+     shell: dpkg --configure -a
+     ignore_errors: True
+     when: (force|bool)
+     tags:
+        - repl
+
+   - name: Check if secondary instance is running
+     become_method: sudo
+     shell: service postgresql status | grep {{ secondary_instance_name }} | grep online | wc -l
+     register: secondary_is_running
+     tags:
+        - repl
+
+   - debug: var=secondary_is_running.stdout verbosity=2
+     tags:
+        - repl
+
+   - debug: msg='primary' verbosity=2
+     when: (inventory_hostname in groups['primary'])
+     tags:
+        - repl
+
+   - debug: msg='Secondary' verbosity=2
+     when: (inventory_hostname in groups['secondary'])
+     tags:
+        - repl
+
+   - debug: msg='Travis' verbosity=2
+     when: (inventory_hostname in groups['travis'])
+     tags:
+        - repl
+
+   - name: stop instance on secondary
+     become_method: sudo
+     shell: sudo -u postgres pg_ctlcluster {{version}} {{secondary_instance_name}} stop -m fast
+     register: result
+     async: 30
+     poll: 10
+     when: (inventory_hostname in groups['secondary']) and (({{ secondary_is_running.stdout | int }}) > 0)
+     tags:
+        - repl
+
+   - debug: var=result.stdout verbosity=2
+     tags:
+        - repl
+
+   - name: Remove secondary database files
+     become_method: sudo
+     file: path={{ secondary_data_dir }} state=absent
+     when: inventory_hostname in groups['secondary']
+     tags:
+        - repl
+
+   - name: Verify secondary database directory exists
+     become_method: sudo
+     file: path={{ secondary_data_dir }} state=directory owner=postgres group=postgres mode=0700
+     when: inventory_hostname in groups['secondary']
+     tags:
+        - repl
+
+   - name: Include Custom PostgreSQL secondary replication configuration settings
+     become_method: sudo
+     lineinfile:
+      dest: "/etc/postgresql/{{ xconf }}"
+      line: "{{ item.line }}"
+      insertafter: EOF
+     with_items:
+       - { line: '' }
+       - { line: "syslog_ident = 'postgres_secondary'" }
+       - { line: '' }
+       - { line: '# - Standby Servers -' }
+       - { line: '# These settings are ignored on a master server.' }
+       - { line: 'hot_standby = on                      # "on" allows queries during recovery' }
+       - { line: 'max_standby_archive_delay = 300s       # max delay before canceling queries' }
+       - { line: '                                       # when reading WAL from archive;' }
+       - { line: '                                       # -1 allows indefinite delay' }
+       - { line: 'max_standby_streaming_delay = 30s      # max delay before canceling queries' }
+       - { line: '                                       # when reading streaming WAL;' }
+       - { line: '                                       # -1 allows indefinite delay' }
+       - { line: 'wal_receiver_status_interval = 10s     # send replies at least this often' }
+       - { line: '                                       # 0 disables' }
+       - { line: 'hot_standby_feedback = on              # send info from standby to prevent' }
+       - { line: '                                       # query conflicts' }
+       - { line: 'wal_receiver_timeout = 300s            # time that receiver waits for' }
+       - { line: '                                       # communication from master' }
+       - { line: '                                       # in milliseconds; 0 disables' }
+       - { line: 'wal_retrieve_retry_interval = 5s       # time to wait before retrying to' }
+       - { line: '                                       # retrieve WAL after a failed attempt' }
+     when: inventory_hostname in groups['secondary']
+     tags:
+        - repl
+
+   - name: Upload PostgreSQL pgpass replication file
+     become_method: sudo
+     template: src=templates/pgpass_file.j2 dest=~postgres/.pgpass owner=postgres group=postgres mode=600 backup=no
+     when: (inventory_hostname in groups['secondary'])
+     tags:
+        - repl
+
+   - name: Backup PostgreSQL for replication
+     become_method: sudo
+     shell: sudo -u postgres pg_basebackup -R -h {{ primary }} -p {{ p_port }} -D {{ secondary_data_dir }} -P -U slave --xlog-method=stream
+     register: result
+     when: (inventory_hostname in groups['secondary'])
+     tags:
+        - repl
+
+   - debug: var=result.stdout verbosity=2
+     tags:
+        - repl
+
+   - name: Start instance on secondary
+     become_method: sudo
+     shell: sudo -u postgres pg_ctlcluster {{ version }} {{ secondary_instance_name }} start
+     register: result
+     when: (inventory_hostname in groups['secondary'])
+     tags:
+        - repl
+
+   - debug: var=result.stdout verbosity=2
+     tags:
+        - repl
+
+   - name: Verify replicated instance port is available
+     wait_for: port={{ s_port }} delay=2 timeout=10
+     when: (inventory_hostname in groups['secondary'])
+     tags:
+        - repl

@@ -1,0 +1,168 @@
+---
+
+   - name: Get existing roles
+     become_method: sudo
+     shell: sudo -u postgres psql -p {{ instance_port }} -t -q -c 'select rolname from pg_roles;'
+     register: current_roles
+
+   - debug:
+       var: current_roles
+       verbosity: 2
+
+   - debug:
+       var: vault_prod_role_app
+       verbosity: 2
+
+   - name: Set vault variables if vagrant/dev run
+     set_fact:
+      vault_prod_role_dba: "{{ vault_role_dba }}"
+      vault_prod_role_dev: "{{ vault_role_dev }}"
+      vault_prod_role_app: "{{ vault_role_app }}"
+      vault_prod_role_monitor: "{{ vault_role_monitor }}"
+      vault_prod_role_slave: "{{ vault_role_slave }}"
+     when: (env == 'vagrant') or (env == 'dev')
+     tags:
+        - auth
+        - backup
+        - multi
+        - repl
+
+   - name: Create default roles
+     become_method: sudo
+     shell: >
+            sudo -u postgres psql -p {{ instance_port }} -t -q -c '
+              DO
+              $body$
+              BEGIN
+                IF NOT EXISTS (
+                  SELECT ROLNAME FROM pg_roles
+                  WHERE  rolname = $${{ item.name }}$$) THEN
+
+                  CREATE ROLE {{ item.name }} WITH {{ item.priv }};
+                END IF;
+              END
+              $body$;'
+
+     with_items:
+      - { name: 'dba', priv: 'SUPERUSER'}
+      - { name: 'app', priv: 'CREATEDB'}
+      - { name: 'mon', priv: 'LOGIN'}
+      - { name: 'dev', priv: 'LOGIN'}
+      - { name: 'repl', priv: 'REPLICATION'}
+     no_log: True
+     tags:
+        - auth
+
+   - name: Get existing roles
+     become_method: sudo
+     shell: sudo -u postgres psql -p {{ instance_port }} -t -q -c 'select rolname from pg_roles;'
+     register: current_roles
+     tags:
+        - auth
+
+   - debug:
+       var: current_roles.stdout_lines
+       verbosity: 2
+     tags:
+        - auth
+
+   - name: Grant privs to default roles
+     become_method: sudo
+     shell: sudo -u postgres psql -p {{ instance_port }} -t -q -c 'GRANT {{ item.name }} ON {{ item.tables }} IN SCHEMA {{ item.schema }} TO {{ item.role}};'
+     with_items:
+      - { name: 'all privileges', tables: 'all tables', schema: 'public', role: 'app' }
+      - { name: 'select', tables: 'all tables', schema: 'public', role: 'dev' }
+      - { name: 'select', tables: 'all tables', schema: 'public', role: 'mon' }
+     tags:
+        - auth
+
+   - name: Create default user roles
+     become_method: sudo
+     shell: >
+            sudo -u postgres psql -p {{ instance_port }} -t -q -c '
+              DO
+              $body$
+              BEGIN
+                IF NOT EXISTS (
+                  SELECT ROLNAME FROM pg_roles
+                  WHERE  rolname = $${{ item.name }}$$) THEN
+
+                  CREATE USER {{ item.name }} INHERIT PASSWORD $${{ item.pass }}$$;
+                END IF;
+              END
+              $body$;'
+
+     with_items:
+      - { name: '{{ app_user }}', role: 'APP', pass: '{{ vault_prod_role_app }}' }
+      - { name: 'dba', role: 'DBA', pass: '{{ vault_prod_role_dba }}' }
+      - { name: 'dataloop', role: 'MON', pass: '{{ vault_prod_role_monitor }}' }
+     no_log: True
+     tags:
+        - auth
+
+   - name: Create default replication user
+     become_method: sudo
+     shell: >
+            sudo -u postgres psql -p {{ instance_port }} -t -q -c '
+              DO
+              $body$
+              BEGIN
+                IF NOT EXISTS (
+                  SELECT ROLNAME FROM pg_roles
+                  WHERE  rolname = $${{ item.name }}$$) THEN
+
+                  CREATE USER {{ item.name }} INHERIT PASSWORD $${{ item.pass }}$$ {{ item.role }};
+                END IF;
+              END
+              $body$;'
+
+     with_items:
+      - { name: 'slave', role: 'REPLICATION', pass: '{{ vault_prod_role_slave }}' }
+     no_log: True
+     tags:
+        - auth
+
+   - name: Grant roles to default user roles
+     become_method: sudo
+     shell: sudo -u postgres psql -p {{ instance_port }} -t -q -c 'GRANT {{ item.role }} TO {{ item.name }};'
+     with_items:
+      - { role: 'app', name: '{{ app_user }}' }
+      - { role: 'dba', name: 'dba' }
+      - { role: 'mon', name: 'dataloop' }
+      - { role: 'repl', name: 'slave' }
+     no_log: True
+     tags:
+        - auth
+
+   - name: Create travis user role if travis run
+     become_method: sudo
+     shell: >
+            sudo -u postgres psql -p {{ instance_port }} -t -q -c '
+              DO
+              $body$
+              BEGIN
+                IF NOT EXISTS (
+                  SELECT ROLNAME FROM pg_roles
+                  WHERE  rolname = $${{ item.name }}$$) THEN
+
+                  CREATE USER {{ item.name }} INHERIT PASSWORD $${{ item.pass }}$$;
+                END IF;
+              END
+              $body$;'
+
+     with_items:
+      - { name: 'travis', role: 'dba', pass: '{{ vault_prod_role_dba }}' }
+     no_log: True
+     when: (env == 'travis')
+     tags:
+        - auth
+
+   - name: Grant roles to travis user role if travis run
+     become_method: sudo
+     shell: sudo -u postgres psql -p {{ instance_port }} -t -q -c 'GRANT {{ item.role }} TO {{ item.name }};'
+     with_items:
+      - { role: 'dba', name: 'travis' }
+     no_log: True
+     when: (env == 'travis')
+     tags:
+        - auth

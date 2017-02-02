@@ -1,0 +1,14 @@
+[dev]
+192.168.2.12 ansible_user=vagrant ansible_ssh_private_key_file=.vagrant/machines/psql_node/virtualbox/private_key
+localhost
+
+[primary]
+192.168.2.12 ansible_user=vagrant ansible_ssh_private_key_file=.vagrant/machines/psql_node/virtualbox/private_key p_port=5432 xconf=moz-postgresql.conf instance_name=main data_dir=/data/main
+localhost p_port=5432 xconf=moz-postgresql.conf instance_name=main data_dir=/data/main
+
+[secondary]
+192.168.2.12 ansible_user=vagrant ansible_ssh_private_key_file=.vagrant/machines/psql_node/virtualbox/private_key s_port=5433 xconf=secondary-postgresql.conf instance_name=secondary data_dir=/data/secondary
+localhost pg_port=5433 xconf=secondary-postgresql.conf instance_name=secondary data_dir=/data/secondary
+
+[travis]
+localhost

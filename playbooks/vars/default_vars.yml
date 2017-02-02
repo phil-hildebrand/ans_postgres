@@ -1,0 +1,91 @@
+---
+# Default variables for new PostgreSQL Host
+
+# System Variables
+
+vaulted: vault
+force: false
+ssd: false
+scheduler: noop
+multi: false
+data_dir: /data
+multi_data_dir: /data/secondary
+backup_dir: /backup
+backup_min: 0
+backup_hour: 8
+backup_notification: root@localhost
+mem: auto
+env: dev
+backups: false
+backups_enabled: false
+password: magic
+version: 9.6
+app_user: psql_app
+repl: false
+instance_name: secondary
+archive_dir: /data/archive
+archive_err_log: /tmp/standby.log
+trigger_file: /tmp/postgresql.trigger
+primary: 192.168.2.12
+secondary: 192.168.2.12
+secondary_data_dir: /data/secondary
+
+# Log Variables
+
+log_connections: yes
+log_destination: syslog
+
+# Connection Settings
+
+listen_addresses: 0.0.0.0
+port: 5432
+multi_port: 5433
+max_connections: 1000
+socket_dir: /tmp
+max_prepared_transactions: 1000
+authentication_timeout: 1
+
+# Memory Settings
+
+shared_buffers: .25
+effective_cache_size: .75
+work_mem: 4MB
+maintenance_work_mem: 64MB
+
+# Wall Settings
+
+wal_level: replica
+wal_level_9.5: hot_standby
+min_wal_size: 80MB
+max_wal_size: 1GB
+max_wal_senders: 8
+wal_buffers: -1
+wal_sync_method: fdatasync
+full_page_writes: on
+
+# Worker Settings
+
+max_files_per_process: 1000
+max_worker_processes: 8
+max_parallel_workers_per_gather: 2
+
+# Transaction Settings
+
+old_snapshot_threshold: 2h
+checkpoint_completion_target: .5
+checkpoint_timout: 5min
+fsync: on
+synchronous_commit: on
+
+# Stats Settings
+
+default_statistics_target: 100
+
+## Vault Variables ##
+#
+#  - vault_role_dba
+#  - vault_role_dev
+#  - vault_role_app
+#  - vault_role_monitor
+#
+## Vault Variables ##

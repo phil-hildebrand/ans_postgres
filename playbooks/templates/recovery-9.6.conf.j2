@@ -1,0 +1,6 @@
+standby_mode = 'on'
+primary_conninfo = 'host={{ primary }} port={{ p_port }} user=slave password={{ vault_prod_role_slave }} sslmode=require'
+trigger_file = '{{ trigger_file }}'
+restore_command = 'cp {{ archive_dir }}/%f "%p" 2>> {{ archive_err_log }}'
+recovery_target_timeline = 'latest'
+
