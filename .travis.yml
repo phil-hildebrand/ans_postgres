@@ -19,6 +19,4 @@ env:
 
 # command to build and run tests
 script:
-  - ssh-keygen -y -f /home/travis/.ssh/id_rsa > /home/travis/.ssh/id_rsa.pub
-  - cat /home/travis/.ssh/id_rsa.pub >> /home/travis/.ssh/authorized_keys
   - pytest -v tests
