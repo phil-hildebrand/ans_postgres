@@ -16,7 +16,7 @@ Vagrant.configure('2') do |config|
     psql_node.vm.network :forwarded_port, host: 5432, guest: 5432
     psql_node.vm.network :forwarded_port, host: 5433, guest: 5433
 
-    psql_node.vm.hostname = "postgres-ss"
+    psql_node.vm.hostname = "psql-node"
 
     psql_node.vm.provider 'virtualbox' do |v|
       v.customize ['modifyvm', :id, '--name', 'ubuntu-postgres']

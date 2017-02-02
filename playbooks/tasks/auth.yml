@@ -93,9 +93,9 @@
               $body$;'
 
      with_items:
-      - { name: '{{ app_user }}', role: 'APP', pass: '{{ vault_prod_role_app }}' }
-      - { name: 'dba', role: 'DBA', pass: '{{ vault_prod_role_dba }}' }
-      - { name: 'dataloop', role: 'MON', pass: '{{ vault_prod_role_monitor }}' }
+      - { name: '{{ app_user }}', pass: '{{ vault_prod_role_app }}' }
+      - { name: 'dba', pass: '{{ vault_prod_role_dba }}' }
+      - { name: 'dataloop', pass: '{{ vault_prod_role_monitor }}' }
      no_log: True
      tags:
         - auth
@@ -127,7 +127,7 @@
      shell: sudo -u postgres psql -p {{ instance_port }} -t -q -c 'GRANT {{ item.role }} TO {{ item.name }};'
      with_items:
       - { role: 'app', name: '{{ app_user }}' }
-      - { role: 'dba', name: 'dba' }
+      - { role: 'postgres', name: 'dba' }
       - { role: 'mon', name: 'dataloop' }
       - { role: 'repl', name: 'slave' }
      no_log: True

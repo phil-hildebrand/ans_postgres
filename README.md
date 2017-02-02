@@ -48,7 +48,7 @@ $ sudo pip install ansible
 - backup_notification: email address for backup mail
 - data_dir: ( `default=/data`) - Where to put postgres data & log directories
 - db\_port: (`default=5432`) - PostgreSQL port to listen on
-- env: \[dev | prod \| travis \| p9 \] (`default=dev`) - Deployment environment
+- env: \[dev | prod \| travis \| (`default=dev`) - Deployment environment
 - force: \[true | false\] (`default=false`) - Remove existing postgres instances
 - instance_name: (`default=secondary`) - instance name for multi instance
 - multi: \[true | false\] (`default=false`) - Configure secondary instance

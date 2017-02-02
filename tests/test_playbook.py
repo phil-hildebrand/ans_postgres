@@ -20,8 +20,8 @@ import time
 # ans_run = 'ansible-playbook -vv -b -i inventory playbooks/main.yml -l 192.168.* --extra-vars '
 # my_host = '192.168.2.12'
 #
-ans_run = 'ansible-playbook -b -i inventory playbooks/main.yml -l localhost --connection=local --extra-vars '
-my_host = 'localhost'
+# ans_run = 'ansible-playbook -b -i inventory playbooks/main.yml -l localhost --connection=local --extra-vars '
+# my_host = 'localhost'
 version = "{}".format(os.getenv('POSTGRES_VERSION'))
 if version == 'None':
     version = '9.6'
