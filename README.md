@@ -1,6 +1,6 @@
 # PostgreSQL Self Service Deployment Tool
 
-https://travis-ci.org/phil-hildebrand/ans_postgres.svg?branch=master
+![]https://travis-ci.org/phil-hildebrand/ans_postgres.svg?branch=master
 
 # Overview
 
