@@ -9,7 +9,7 @@ with open('requirements.txt') as f:
     requirements = f.read().splitlines()
 
 setup(name = 'playbook_tests',
-      version = '1.0.0',
+      version = '1.0.1',
       description = 'PostgreSQL laybook tests',
       url = 'http://github.com/phil-hildebrand/ans_postgres',
       author = 'Phil Hildebrand',
